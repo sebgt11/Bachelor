@@ -3,26 +3,36 @@
 #include <string.h>
 #include <math.h>
 #include <stdio.h>
+#include <time.h>
+
+#define BLOCK_SIZE      4
+#define SUPERBLOCK_FREQ 4
+#define CSV_PATH        "bitvectors.csv"
+#define MAX_N           4096
 
 #define WORD_SIZE 64
 
-#define MAX_BITS 1024
-#define MAX_BLOCKS 256
-#define MAX_WORDS 16
+#define MAX_BLOCKS      (MAX_N / BLOCK_SIZE)
+#define MAX_SUPERBLOCKS (MAX_N / (BLOCK_SIZE * SUPERBLOCK_FREQ))
+#define MAX_BITS        MAX_N
+#define MAX_OFFSET_BITS MAX_N
+#define MAX_WORDS       ((MAX_OFFSET_BITS + 63) / 64)
+
+
 
 typedef struct {
-    uint64_t *W;  //bits
-    uint8_t   C[MAX_BLOCKS];  //class of each block
-    uint64_t  O[MAX_WORDS];  // offset
-    uint64_t  P[MAX_BLOCKS];  // starting position of bit
-    uint64_t  R[MAX_BLOCKS];  //rank for each block
-    uint64_t  K[65][65];  //Pascal precomputed
-    uint64_t  L[65];  //bits per class
-    uint64_t  n;   // total bits
-    int       b;    // block size
-    int       k;  // how often P and K
-    uint64_t  num_blocks;   // total # of blocks
-    uint64_t  o_pos;      // current pos in O
+    uint8_t   C[MAX_BLOCKS];
+    uint64_t  O[MAX_WORDS];
+    uint64_t  P[MAX_SUPERBLOCKS];
+    uint64_t  R[MAX_SUPERBLOCKS];
+    uint64_t  S[MAX_BITS];
+    uint64_t  K[65][65];
+    uint64_t  L[65];
+    uint64_t  n;
+    int       b;
+    int       k;
+    uint64_t  num_blocks;
+    uint64_t  o_pos;
 } Bitvector;
 
 
@@ -168,13 +178,25 @@ static uint64_t decode(int c, uint64_t o, int b, uint64_t K[65][65])
     return B;
 }
 
+static void CreateS(Bitvector *bv, uint64_t *W)
+{
+    uint64_t count = 0;
+    for (uint64_t i = 1; i <= bv->n; i++)
+    {
+        if (bit_read(W, i) == 1)
+        {
+            bv->S[count] = i;
+            count++;
+        }
+    }
+}
+
 static Bitvector bitvector_build(uint64_t *W, uint64_t n, int b, int k)
 {
-    Bitvector bv;
+    Bitvector bv = {0};
 
     bv.n = n;
     bv.b= b;
-    bv.W = W;
     bv.k = k;
     bv.num_blocks = n/b;
 
@@ -210,7 +232,7 @@ static Bitvector bitvector_build(uint64_t *W, uint64_t n, int b, int k)
         int len = bv.L[c];
         if(len > 0)
         {
-            bits_write(bv.O, o_pos, o_pos + len, o);
+            bits_write(bv.O, o_pos, len, o);
             o_pos += len;
         }
 
@@ -219,6 +241,8 @@ static Bitvector bitvector_build(uint64_t *W, uint64_t n, int b, int k)
     }
 
     bv.o_pos = o_pos;   
+
+    CreateS(&bv, W);
 
     return bv;   
 }
@@ -259,44 +283,101 @@ static int bitvector_rank(Bitvector bv, int i)
     return r + popcount(partial);
 }
 
-int main()
+static int bitvector_select(Bitvector bv, int j) { return (int)bv.S[j-1]; }
+
+
+// De her laver sådan set bare hel normal Brute force gennemgang af bits og laver et count
+//det blir brugt til at validate resultater
+static int gt_rank(const char *s, int i)
+    { int r=0; for(int j=0;j<i;j++) r+=(s[j]=='1'); return r; }
+static int gt_select(const char *s, int n, int j)
+    { int cnt=0; for(int i=1;i<=n;i++) if(s[i-1]=='1'&&++cnt==j) return i; return -1; }
+ 
+static double ms(struct timespec a, struct timespec b)
+    { return (b.tv_sec-a.tv_sec)*1000.0 + (b.tv_nsec-a.tv_nsec)/1e6; }
+ 
+
+
+int main(void)
 {
-    uint64_t W[1] = {0};
-    const char *bits = "1000001000000110000010100000101110000001";
-    int n = 40;
 
-    for(int i = 0; i < n; i++)
+    FILE *fp = fopen(CSV_PATH, "r");
+    if (!fp) { fprintf(stderr, "Cannot open %s\n", CSV_PATH); return 1; }
+ 
+    static char     bvs[MAX_N+2];
+    static uint64_t W[MAX_N/WORD_SIZE];
+    char line[MAX_N+64];
+    fgets(line, sizeof(line), fp); 
+ 
+    long long rows=0, rank_pass=0, rank_fail=0, sel_pass=0, sel_fail=0;
+    double ms_build=0, ms_rank=0, ms_sel=0;
+    struct timespec t0, t1;
+
+    uint64_t t =1;
+ 
+    while (fgets(line, sizeof(line), fp))
     {
-        if(bits[i] == '1')
-        {
-            bit_set(W, i + 1);
+        printf("%llu\n",t);
+        t++;
+
+        strtok(line, ","); strtok(NULL, ",");
+        char *tok = strtok(NULL, ",\r\n");
+        if (!tok) continue;
+        strncpy(bvs, tok, MAX_N); bvs[MAX_N] = '\0';
+        int n = (int)strlen(bvs);
+        if (n == 0 || n % (BLOCK_SIZE * SUPERBLOCK_FREQ) != 0) continue;
+ 
+        memset(W, 0, sizeof(W));
+        for (int i = 0; i < n; i++) if (bvs[i]=='1') bit_set(W, i+1);
+ 
+        //Test 1: Hvor lang tid tager det at bygge
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        Bitvector bv = bitvector_build(W, n, BLOCK_SIZE, SUPERBLOCK_FREQ);
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        ms_build += ms(t0, t1);
+        rows++;
+ 
+        int ones = gt_rank(bvs, n);
+ 
+        //Test2: Rank for hver position
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        for (int i = 1; i <= n; i++) {
+            int fast = bitvector_rank(bv, i);
+            clock_gettime(CLOCK_MONOTONIC, &t1);
+            ms_rank += ms(t0, t1);
+
+            int slow = gt_rank(bvs, i);
+
+            if (fast == slow) rank_pass++;
+            else rank_fail++;
+
+            clock_gettime(CLOCK_MONOTONIC, &t0);
         }
-            
+ 
+        //Test3: Select for hver bit
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        for (int j = 1; j <= ones; j++) {
+            int fast = bitvector_select(bv, j);
+            clock_gettime(CLOCK_MONOTONIC, &t1);
+            ms_sel += ms(t0, t1);
+
+            int slow = gt_select(bvs, n, j);
+
+            if (fast == slow) sel_pass++;
+            else sel_fail++;
+
+            clock_gettime(CLOCK_MONOTONIC, &t0);
+        }       
     }
-        
-
-    Bitvector bv = bitvector_build(W, n, 4, 4);
-
-    printf("C: ");
-    for(int i = 0; i < (int)bv.num_blocks; i++)
-        printf("%d ", bv.C[i]);
-    printf("\n");
-
-    printf("P: ");
-    for(int i = 0; i < (int)(bv.num_blocks + bv.k - 1) / bv.k; i++)
-        printf("%llu ", bv.P[i]);
-    printf("\n");
-
-    printf("R: ");
-    for(int i = 0; i < (int)(bv.num_blocks + bv.k - 1) / bv.k; i++) 
-        printf("%llu ", bv.R[i]);
-    printf("\n");
-
-    printf("\n rank tests\n");
-    printf("%d (expected 4)\n",  bitvector_rank(bv, 16));
-    printf("%d (expected 8)\n",  bitvector_rank(bv, 31));
-    printf("%d (expected 9)\n",  bitvector_rank(bv, 32));
-    printf("%d (expected 11)\n", bitvector_rank(bv, 40));
-
-    return 0;
+    fclose(fp);
+ 
+    printf("b=%d,  k=%d, rows=%lld\n\n", BLOCK_SIZE, SUPERBLOCK_FREQ, rows);
+    printf("Build   : %.3f ms total   %.4f ms/row\n", ms_build, ms_build/rows);
+    printf("Rank    : %lld/%lld passed   %.3f ms total   %s\n",
+           rank_pass, rank_pass+rank_fail, ms_rank, rank_fail ? "FAIL" : "OK");
+    printf("Select  : %lld/%lld passed   %.3f ms total   %s\n",
+           sel_pass, sel_pass+sel_fail, ms_sel, sel_fail ? "FAIL" : "OK");
+ 
+    return (rank_fail || sel_fail) ? 1 : 0;
 }
+
