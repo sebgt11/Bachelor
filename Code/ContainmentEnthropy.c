@@ -89,6 +89,7 @@ void build_universe(uint8_t input_sets[][MAX_ELEMENT_VALUE],
     }
 }
 
+//Copies input bitvectors into the collection and computes each sets size
 void load_sets(uint8_t input_sets[][MAX_ELEMENT_VALUE],
                uint32_t num_sets,
                SetCollection *col) {
@@ -117,6 +118,7 @@ void load_sets(uint8_t input_sets[][MAX_ELEMENT_VALUE],
     }
 }
 
+//sorts set by descending order it sues insertion sort
 void sort_sets_by_size_desc(SetCollection *col)
 {
     for (uint32_t i = 1; i < col->num_sets; i++)
@@ -132,6 +134,7 @@ void sort_sets_by_size_desc(SetCollection *col)
     }
 }
 
+//	For each element it records the indices of all sets containing it
 void build_inverted_list(SetCollection *col, InvertedList *il)
 {
     for (uint32_t e = 0; e < MAX_ELEMENT_VALUE; e++)
@@ -153,6 +156,7 @@ void build_inverted_list(SetCollection *col, InvertedList *il)
     }
 }
 
+//Finds each sets smallest superset by intersecting inverted list entries
 void build_hierarchy(SetCollection *col, InvertedList *il)
 {
     for (uint32_t i = 0; i < col->num_sets; i++)
@@ -205,6 +209,7 @@ void build_hierarchy(SetCollection *col, InvertedList *il)
     }
 }
 
+//Replaces each parent with the highest ancestor whose size is at most 2x
 void contract_parents(SetCollection *col)
 {
     for (uint32_t i = 0; i < col->num_sets; i++)
@@ -226,6 +231,7 @@ void contract_parents(SetCollection *col)
     }
 }
 
+//makes bitvectors relative to parent
 void build_relative_bitvectors(SetCollection *col)
 {
     for (int32_t i = (int32_t)col->num_sets - 1; i >= 0; i--)
@@ -259,6 +265,7 @@ void build_relative_bitvectors(SetCollection *col)
     }
 }
 
+//Naive scan returning the position of the k-th 1-bit
 uint32_t select_in_bitvector(uint8_t *bv, uint32_t len, uint32_t k)
 {
     uint32_t count = 0;
@@ -273,6 +280,7 @@ uint32_t select_in_bitvector(uint8_t *bv, uint32_t len, uint32_t k)
     return UINT32_MAX;
 }
 
+//Recursively walks up the hierarchy to translate a position into a universe element
 uint32_t retrieve(SetCollection *col, uint32_t set_idx, uint32_t k)
 {
     SetNode *node = &col->nodes[set_idx];
@@ -288,6 +296,7 @@ uint32_t retrieve(SetCollection *col, uint32_t set_idx, uint32_t k)
     return retrieve(col, node->parent_index, p + 1);
 }
 
+//Counts the number of 1-bits in bitvector
 uint32_t rank_in_bitvector(uint8_t *bv, uint32_t i)
 {
     uint32_t count = 0;
@@ -297,7 +306,7 @@ uint32_t rank_in_bitvector(uint8_t *bv, uint32_t i)
     }
     return count;
 }
-
+//Recursively translates the cutoff k through the hierarchy and counts elements <= k
 uint32_t rank_set(SetCollection *col, uint32_t set_idx, uint32_t k)
 {
     SetNode *node = &col->nodes[set_idx];
@@ -316,6 +325,7 @@ uint32_t rank_set(SetCollection *col, uint32_t set_idx, uint32_t k)
     return rank_in_bitvector(node->bitvector, p - 1);
 }
 
+//Helper that converts a list of element values into a 0/1 bitvector row
 void add_set(uint8_t *row, int *elements, int n)
 {
     for (int j = 0; j < MAX_ELEMENT_VALUE; j++) row[j] = 0;
