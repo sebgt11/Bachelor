@@ -4,6 +4,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <assert.h>
+#include "Baseline.h"
+
 
 //General structure
 #define MAX_ELEMENT_VALUE 1024

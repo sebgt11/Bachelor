@@ -298,48 +298,74 @@ static double ms(struct timespec a, struct timespec b)
  
 
 
-int main(void)
+// Number of bits used to store one class value in [0, b].
+static int class_bits(int b)
 {
+    int bits = 0;
+    for (int t = b; t > 0; t >>= 1) bits++;
+    return bits ? bits : 1;
+}
 
-    FILE *fp = fopen(CSV_PATH, "r");
-    if (!fp) { fprintf(stderr, "Cannot open %s\n", CSV_PATH); return 1; }
- 
+// Stored payload of one compressed bitvector, in bits: the class array plus
+// the packed offsets. R, P and S are query-acceleration structures and are
+// reported separately, so this figure is the part that approaches the entropy.
+static uint64_t bitvector_payload_bits(Bitvector bv, int cb)
+{
+    return bv.num_blocks * (uint64_t)cb + (bv.o_pos - 1);
+}
+
+// Runs every set in the CSV through the encoder at one block size b, measuring
+// space (bits per element), build time, and rank/select speed, and verifying
+// every answer against a brute-force ground truth. Each bitvector is zero-padded
+// up to a multiple of b*k so the same rows are used for every block size, which
+// keeps the sweep a fair comparison.
+static int run_block_size(const char *path, int b, int k)
+{
+    FILE *fp = fopen(path, "r");
+    if (!fp) { fprintf(stderr, "Cannot open %s\n", path); return 1; }
+
     static char     bvs[MAX_N+2];
     static uint64_t W[MAX_N/WORD_SIZE];
     char line[MAX_N+64];
-    fgets(line, sizeof(line), fp); 
- 
+    fgets(line, sizeof(line), fp);
+
+    int cb  = class_bits(b);
+    int pad = b * k;
+
     long long rows=0, rank_pass=0, rank_fail=0, sel_pass=0, sel_fail=0;
     double ms_build=0, ms_rank=0, ms_sel=0;
+    uint64_t total_payload_bits=0, total_ones=0;
     struct timespec t0, t1;
 
-    uint64_t t =1;
- 
     while (fgets(line, sizeof(line), fp))
     {
-        printf("%llu\n",t);
-        t++;
-
         strtok(line, ","); strtok(NULL, ",");
         char *tok = strtok(NULL, ",\r\n");
         if (!tok) continue;
         strncpy(bvs, tok, MAX_N); bvs[MAX_N] = '\0';
         int n = (int)strlen(bvs);
-        if (n == 0 || n % (BLOCK_SIZE * SUPERBLOCK_FREQ) != 0) continue;
- 
+        if (n == 0) continue;
+
+        int np = ((n + pad - 1) / pad) * pad;   // pad up to a whole superblock
+        if (np > MAX_N) continue;
+
         memset(W, 0, sizeof(W));
         for (int i = 0; i < n; i++) if (bvs[i]=='1') bit_set(W, i+1);
- 
-        //Test 1: Hvor lang tid tager det at bygge
+
+        //Test 1: build time
         clock_gettime(CLOCK_MONOTONIC, &t0);
-        Bitvector bv = bitvector_build(W, n, BLOCK_SIZE, SUPERBLOCK_FREQ);
+        Bitvector bv = bitvector_build(W, np, b, k);
         clock_gettime(CLOCK_MONOTONIC, &t1);
         ms_build += ms(t0, t1);
         rows++;
- 
+
         int ones = gt_rank(bvs, n);
- 
-        //Test2: Rank for hver position
+
+        //Space: stored payload bits for this set
+        total_payload_bits += bitvector_payload_bits(bv, cb);
+        total_ones += ones;
+
+        //Test 2: rank at every position
         clock_gettime(CLOCK_MONOTONIC, &t0);
         for (int i = 1; i <= n; i++) {
             int fast = bitvector_rank(bv, i);
@@ -353,8 +379,8 @@ int main(void)
 
             clock_gettime(CLOCK_MONOTONIC, &t0);
         }
- 
-        //Test3: Select for hver bit
+
+        //Test 3: select for every 1-bit
         clock_gettime(CLOCK_MONOTONIC, &t0);
         for (int j = 1; j <= ones; j++) {
             int fast = bitvector_select(bv, j);
@@ -367,17 +393,47 @@ int main(void)
             else sel_fail++;
 
             clock_gettime(CLOCK_MONOTONIC, &t0);
-        }       
+        }
     }
     fclose(fp);
- 
-    printf("b=%d,  k=%d, rows=%lld\n\n", BLOCK_SIZE, SUPERBLOCK_FREQ, rows);
-    printf("Build   : %.3f ms total   %.4f ms/row\n", ms_build, ms_build/rows);
-    printf("Rank    : %lld/%lld passed   %.3f ms total   %s\n",
-           rank_pass, rank_pass+rank_fail, ms_rank, rank_fail ? "FAIL" : "OK");
-    printf("Select  : %lld/%lld passed   %.3f ms total   %s\n",
-           sel_pass, sel_pass+sel_fail, ms_sel, sel_fail ? "FAIL" : "OK");
- 
-    return (rank_fail || sel_fail) ? 1 : 0;
+
+    if (rows == 0) { fprintf(stderr, "No usable rows in %s\n", path); return 1; }
+
+    long long total_ranks = rank_pass + rank_fail;
+    long long total_sels  = sel_pass + sel_fail;
+    int ok = !(rank_fail || sel_fail);
+
+    printf("b=%-3d k=%d  rows=%-6lld  %7.3f bits/elem   build %.4f ms/row   "
+           "rank %.6f ms/q   select %.6f ms/q   %s\n",
+           b, k, rows,
+           total_ones ? (double)total_payload_bits/total_ones : 0.0,
+           ms_build/rows,
+           total_ranks ? ms_rank/total_ranks : 0.0,
+           total_sels ? ms_sel/total_sels : 0.0,
+           ok ? "OK" : "FAIL");
+
+    return ok ? 0 : 1;
+}
+
+// Sweeps a range of block sizes so the effect of b on space and query time can
+// be read off directly. The select-helper array S caps usable bit-lengths at
+// MAX_BITS, and the class array at MAX_BLOCKS = MAX_N / 4, so the smallest block
+// size in the sweep must be at least 4 to stay within the static bounds.
+static int run_baseline(const char *path)
+{
+    int sizes[] = {4, 8, 16, 32};
+    int k = SUPERBLOCK_FREQ;
+    int status = 0;
+
+    printf("Block-size sweep over %s  (k = %d)\n\n", path, k);
+    for (int s = 0; s < (int)(sizeof(sizes) / sizeof(sizes[0])); s++)
+        status |= run_block_size(path, sizes[s], k);
+
+    return status;
+}
+
+int main(void)
+{
+    return run_baseline(CSV_PATH);
 }
 
