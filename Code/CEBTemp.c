@@ -427,8 +427,8 @@ int main(void)
 
     //demonstrate retrieve and rank on the smallest set
     uint32_t s = num_sets - 1;
-    printf("queries on set %u (size %u)\n", s, col.nodes[s].size);
-    printf("  retrieve k = 1..%u : ", col.nodes[s].size);
+    printf("queries on set %u (size %u)\n", s+1, col.nodes[s].size);
+    printf("  retrieve k = 1, 2 %u : ", col.nodes[s].size);
     for (uint32_t k = 1; k <= col.nodes[s].size; k++)
         printf("%u ", retrieve(&col, s, k));
     printf("\n");

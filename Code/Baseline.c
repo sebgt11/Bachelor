@@ -60,7 +60,7 @@ static void populateK(uint64_t K[65][65])
     }
 }
 
-//number of offset bits needed for each class 0..b
+//number of offset bits needed for each class
 static void createL(int b, uint64_t K[65][65], uint64_t L[65])
 {
     for (int i = 0; i <= b; i++)
@@ -73,7 +73,7 @@ static void createL(int b, uint64_t K[65][65], uint64_t L[65])
     }
 }
 
-//turn one block into its class (number of 1s) and its offset within that class
+//turn one block into its class and its offset within that class
 static void encode(uint64_t *W, uint64_t start, int b, uint64_t K[65][65],
                    int *c_out, uint64_t *o_out)
 {
@@ -118,7 +118,7 @@ static Bitvector bitvector_build(uint64_t *W, uint64_t n, int b, int k)
     {
         uint64_t start = i * b + 1;
 
-        if (i % k == 0)                 //drop a checkpoint every k blocks
+        if (i % k == 0)                 //checkpoint every k blocks
         {
             bv.P[i / k] = o_pos;
             bv.R[i / k] = rank_count;

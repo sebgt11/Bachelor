@@ -493,9 +493,9 @@ static uint64_t index_bits(Bitvector bv)
     }
 
     uint64_t num_checkpoints = (bv.num_blocks + bv.k - 1) / bv.k;
-    int rank_w = bits_for(bv.n);        //R holds 1-counts up to n
-    int pos_w  = bits_for(bv.o_pos);    //P holds offset positions up to o_pos
-    int sel_w  = bits_for(bv.n);        //S holds 1-positions up to n
+    int rank_w = bits_for(bv.n);        
+    int pos_w  = bits_for(bv.o_pos);   
+    int sel_w  = bits_for(bv.n);       
 
     return num_checkpoints * (uint64_t)rank_w
          + num_checkpoints * (uint64_t)pos_w
@@ -773,7 +773,7 @@ static int run_config(int dataset, uint64_t seed, int b, int use_contraction,
     return all_ok ? 0 : 1;
 }
 
-//sweep every setup and write the results file
+//pass through every setup and write the results file
 int main(void)
 {
     baseline_init();
